@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-gray-100 text-gray-800">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QR Code Generator & Scanner</title>
+    <link rel="icon" href="/images/favicon.ico" />
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="p-6">
+    <div class="max-w-2xl mx-auto bg-white p-6 rounded-xl shadow-md">
+        <h1 class="text-2xl font-bold mb-4 text-center">📷 QR Code Scanner</h1>
+
+        <div class="flex flex-wrap justify-center gap-4 my-4">
+            <button id="ask-permission" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">
+                ✅ ขอสิทธิ์เข้ากล้อง
+            </button>
+            <button id="scan-toggle" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                ▶️ เริ่มสแกน
+            </button>
+            <button id="upload-file" class="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700">
+                📁 อ่านจากไฟล์
+            </button>
+            <button id="reset-permission" class="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">
+                🔄 รีเซ็ตสิทธิ์
+            </button>
+            <label for="file-input" class="sr-only">Upload QR Code Image</label>
+            <input id="file-input" type="file" accept="image/*" class="hidden" title="Upload QR Code Image" />
+        </div>
+
+        <div id="reader" class="mb-4 w-full max-w-md mx-auto"></div>
+        <div id="scan-result" class="text-center text-sm text-gray-600 mt-2"></div>
+
+        <hr class="my-6" />
+
+        <h2 class="text-xl font-semibold mb-2 text-center">🎯 Generate QR Code</h2>
+        <form id="generate-form" class="flex flex-col gap-4 items-center">
+            <input id="qr-text" type="text" placeholder="Enter text to generate QR Code"
+                class="w-full max-w-md px-4 py-2 border border-gray-300 rounded focus:outline-none focus:ring focus:border-blue-300" />
+            <button type="submit"
+                class="px-6 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 transition">Generate</button>
+        </form>
+
+        <div id="qr-result" class="mt-4 text-center hidden">
+            <h3 class="text-lg font-medium mb-2">Generated QR Code:</h3>
+            <img id="qr-image" class="mx-auto border p-2" alt="Generated QR Code" />
+        </div>
+    </div>
+
+    <script>
+        const sendScannedTextToServer = async (text) => {
+            try {
+                const res = await fetch('/api/scan-result', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text })
+                });
+
+                const data = await res.json();
+                console.log("📡 Server response:", data);
+            } catch (err) {
+                console.error("❌ Failed to send scanned text:", err);
+            }
+        };
+    </script>
+
+    <script>
+        let html5QrCode = null;
+        let isScanning = false;
+        let selectedCameraId = null;
+
+        const scanBtn = document.getElementById("scan-toggle");
+        const permissionBtn = document.getElementById("ask-permission");
+        const resetBtn = document.getElementById("reset-permission");
+        const uploadBtn = document.getElementById("upload-file");
+        const fileInput = document.getElementById("file-input");
+        const resultElem = document.getElementById("scan-result");
+
+        // ซ่อนปุ่มบางอันก่อนรู้ผลสิทธิ์
+        const controlButtons = [scanBtn, resetBtn];
+        controlButtons.forEach(btn => btn.style.display = "none");
+
+        // ตรวจสอบสิทธิ์กล้องทันทีเมื่อเปิดหน้า
+        const checkCameraPermissionOnLoad = async () => {
+            if (!navigator.permissions) return;
+
+            try {
+                const status = await navigator.permissions.query({ name: 'camera' });
+                handlePermissionState(status.state);
+
+                // อัปเดตอัตโนมัติเมื่อสิทธิ์เปลี่ยน
+                status.onchange = () => handlePermissionState(status.state);
+            } catch (err) {
+                console.warn("Permission API not supported or blocked", err);
+            }
+        };
+
+        const handlePermissionState = (state) => {
+            if (state === "granted") {
+                permissionBtn.style.display = "none";
+                controlButtons.forEach(btn => btn.style.display = "inline-block");
+            } else if (state === "prompt") {
+                permissionBtn.style.display = "inline-block";
+                controlButtons.forEach(btn => btn.style.display = "none");
+            } else if (state === "denied") {
+                permissionBtn.style.display = "inline-block";
+                resetBtn.style.display = "inline-block";
+                scanBtn.style.display = "none";
+            }
+        };
+
+        // ขอสิทธิ์กล้อง
+        const requestCameraPermission = async () => {
+            try {
+                await navigator.mediaDevices.getUserMedia({ video: true });
+                alert("✅ ได้รับสิทธิ์เข้ากล้องแล้ว");
+                checkCameraPermissionOnLoad(); // ตรวจอีกทีหลังได้สิทธิ์
+            } catch (err) {
+                alert("❌ ไม่สามารถเข้าถึงกล้องได้");
+                console.error(err);
+            }
+        };
+
+        const resetCameraPermission = () => {
+            alert(`1. คลิกไอคอน 🔒 บน URL\n2. ไปที่ Site Settings\n3. อนุญาต Camera\n4. Refresh หน้าเว็บ`);
+            const url = `chrome://settings/content/siteDetails?site=${window.location.origin}`;
+            if (navigator.userAgent.includes("Chrome")) window.open(url, "_blank");
+        };
+
+        const selectCamera = async () => {
+            const devices = await Html5Qrcode.getCameras();
+            if (!devices.length) throw new Error("ไม่พบกล้อง");
+            const backCam = devices.find(d => d.label.toLowerCase().includes("back"));
+            selectedCameraId = (backCam || devices[0]).id;
+        };
+
+        const updateScanButton = (active) => {
+            isScanning = active;
+            scanBtn.innerText = active ? "⏹ หยุดสแกน" : "▶️ เริ่มสแกน";
+            scanBtn.classList.toggle("bg-blue-600", !active);
+            scanBtn.classList.toggle("hover:bg-blue-700", !active);
+            scanBtn.classList.toggle("bg-gray-600", active);
+            scanBtn.classList.toggle("hover:bg-gray-700", active);
+        };
+
+        const toggleScanCamera = async () => {
+            if (!html5QrCode) html5QrCode = new Html5Qrcode("reader");
+            if (!selectedCameraId) {
+                try {
+                    await selectCamera();
+                } catch (err) {
+                    alert("❌ ไม่สามารถเข้าถึงกล้องได้");
+                    return;
+                }
+            }
+
+            if (!isScanning) {
+                try {
+                    await html5QrCode.start(
+                        selectedCameraId,
+                        { fps: 10, qrbox: { width: 250, height: 250 } },
+                        text => {
+                            resultElem.innerText = `Scanned Text: ${text}`
+                            sendScannedTextToServer(text);
+                        },
+                        err => console.warn("Scan error:", err)
+                    );
+                    updateScanButton(true);
+                } catch (err) {
+                    console.error("Start scan failed:", err);
+                }
+            } else {
+                try {
+                    await html5QrCode.stop();
+                    updateScanButton(false);
+                } catch (err) {
+                    console.error("Stop scan failed:", err);
+                }
+            }
+        };
+
+        const scanFromImageFile = async (file) => {
+            const qrScanner = new Html5Qrcode("reader");
+            try {
+                const result = await qrScanner.scanFile(file, true);
+                await sendScannedTextToServer(result);
+                resultElem.innerText = `Scanned from file: ${result}`;
+            } catch (err) {
+                alert("❌ ไม่สามารถอ่าน QR จากไฟล์นี้ได้");
+                console.error("File scan error:", err);
+            }
+        };
+
+        const handleUploadClick = () => fileInput.click();
+        const handleFileChange = (e) => {
+            const file = e.target.files[0];
+            if (file) scanFromImageFile(file);
+        };
+
+        const generateQrCode = async (e) => {
+            e.preventDefault();
+            const text = document.getElementById("qr-text").value;
+            if (!text) return;
+
+            try {
+                const res = await fetch(`/api/gen-qrcode?text=${encodeURIComponent(text)}`);
+                const data = await res.json();
+                if (data.qr) {
+                    document.getElementById("qr-image").src = data.qr;
+                    document.getElementById("qr-result").classList.remove("hidden");
+                }
+            } catch (err) {
+                console.error("Error generating QR:", err);
+            }
+        };
+
+        // เชื่อม event กับปุ่มต่างๆ
+        document.getElementById("ask-permission").addEventListener("click", requestCameraPermission);
+        document.getElementById("reset-permission").addEventListener("click", resetCameraPermission);
+        document.getElementById("scan-toggle").addEventListener("click", toggleScanCamera);
+        document.getElementById("upload-file").addEventListener("click", handleUploadClick);
+        document.getElementById("file-input").addEventListener("change", handleFileChange);
+        document.getElementById("generate-form").addEventListener("submit", generateQrCode);
+
+        // 🚀 เรียกทันทีเมื่อโหลดหน้า
+        window.addEventListener("DOMContentLoaded", checkCameraPermissionOnLoad);
+    </script>
+</body>
+
+</html>
